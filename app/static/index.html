@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codex Relay Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen" x-data="app()" x-init="init()" x-cloak>
+  <!-- Login overlay -->
+  <div x-show="!adminKey" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg p-8 w-96 shadow-xl">
+      <h2 class="text-xl font-bold mb-4">Codex Relay 管理后台</h2>
+      <input x-model="loginKey" type="password" placeholder="输入 Admin Key"
+             class="w-full border rounded px-3 py-2 mb-4" @keydown.enter="doLogin()">
+      <button @click="doLogin()" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">登录</button>
+      <p x-show="loginError" class="text-red-500 text-sm mt-2" x-text="loginError"></p>
+    </div>
+  </div>
+
+  <div class="flex">
+    <!-- Sidebar -->
+    <aside class="w-56 bg-gray-900 text-white min-h-screen p-4">
+      <h1 class="text-lg font-bold mb-6">Codex Relay</h1>
+      <nav>
+        <template x-for="item in navItems" :key="item.id">
+          <button @click="page = item.id; loadPage()"
+                  :class="page === item.id ? 'bg-gray-700' : 'hover:bg-gray-800'"
+                  class="w-full text-left px-3 py-2 rounded mb-1 text-sm" x-text="item.label">
+          </button>
+        </template>
+      </nav>
+    </aside>
+
+    <!-- Main content -->
+    <main class="flex-1 p-6">
+      <!-- Dashboard -->
+      <div x-show="page === 'dashboard'">
+        <h2 class="text-2xl font-bold mb-4">仪表盘</h2>
+        <div class="grid grid-cols-4 gap-4 mb-6">
+          <div class="bg-white rounded-lg p-4 shadow">
+            <div class="text-gray-500 text-sm">今日请求</div>
+            <div class="text-2xl font-bold" x-text="dashboard.total_requests"></div>
+          </div>
+          <div class="bg-white rounded-lg p-4 shadow">
+            <div class="text-gray-500 text-sm">输入 Tokens</div>
+            <div class="text-2xl font-bold" x-text="dashboard.total_input_tokens"></div>
+          </div>
+          <div class="bg-white rounded-lg p-4 shadow">
+            <div class="text-gray-500 text-sm">输出 Tokens</div>
+            <div class="text-2xl font-bold" x-text="dashboard.total_output_tokens"></div>
+          </div>
+          <div class="bg-white rounded-lg p-4 shadow">
+            <div class="text-gray-500 text-sm">活跃用户</div>
+            <div class="text-2xl font-bold" x-text="dashboard.active_users"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users -->
+      <div x-show="page === 'users'">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-2xl font-bold">用户管理</h2>
+          <button @click="showForm = 'user'" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">+ 新建用户</button>
+        </div>
+        <div x-show="showForm === 'user'" class="bg-white rounded-lg p-4 mb-4 shadow">
+          <div class="grid grid-cols-3 gap-3">
+            <input x-model="forms.user.email" placeholder="邮箱" class="border rounded px-3 py-2">
+            <input x-model="forms.user.password" type="password" placeholder="密码" class="border rounded px-3 py-2">
+            <select x-model="forms.user.role" class="border rounded px-3 py-2">
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
+          <div class="mt-3">
+            <button @click="createUser()" class="bg-green-600 text-white px-4 py-2 rounded text-sm mr-2">创建</button>
+            <button @click="showForm = null" class="text-gray-500 text-sm">取消</button>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50"><tr>
+              <th class="text-left px-4 py-2">ID</th><th class="text-left px-4 py-2">邮箱</th>
+              <th class="text-left px-4 py-2">角色</th><th class="text-left px-4 py-2">状态</th>
+              <th class="text-left px-4 py-2">余额</th><th class="text-left px-4 py-2">操作</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="u in users" :key="u.id">
+                <tr class="border-t">
+                  <td class="px-4 py-2" x-text="u.id"></td>
+                  <td class="px-4 py-2" x-text="u.email"></td>
+                  <td class="px-4 py-2" x-text="u.role"></td>
+                  <td class="px-4 py-2"><span :class="u.status === 'active' ? 'text-green-600' : 'text-red-600'" x-text="u.status"></span></td>
+                  <td class="px-4 py-2" x-text="u.balance.toFixed(2)"></td>
+                  <td class="px-4 py-2">
+                    <button @click="deleteUser(u.id)" class="text-red-500 text-xs">删除</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- API Keys -->
+      <div x-show="page === 'apikeys'">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-2xl font-bold">API Key 管理</h2>
+          <button @click="showForm = 'apikey'" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">+ 新建 Key</button>
+        </div>
+        <div x-show="showForm === 'apikey'" class="bg-white rounded-lg p-4 mb-4 shadow">
+          <div class="grid grid-cols-3 gap-3">
+            <input x-model="forms.apikey.user_id" placeholder="用户 ID" class="border rounded px-3 py-2">
+            <input x-model="forms.apikey.name" placeholder="Key 名称" class="border rounded px-3 py-2">
+            <input x-model="forms.apikey.rpm" placeholder="RPM (默认60)" class="border rounded px-3 py-2">
+          </div>
+          <div class="mt-3">
+            <button @click="createKey()" class="bg-green-600 text-white px-4 py-2 rounded text-sm mr-2">创建</button>
+            <button @click="showForm = null" class="text-gray-500 text-sm">取消</button>
+          </div>
+          <div x-show="createdKey" class="mt-3 bg-green-50 border border-green-200 rounded p-3">
+            <div class="text-sm font-bold text-green-800">Key 已创建（仅显示一次，请妥善保存）：</div>
+            <code class="text-sm break-all" x-text="createdKey"></code>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50"><tr>
+              <th class="text-left px-4 py-2">ID</th><th class="text-left px-4 py-2">名称</th>
+              <th class="text-left px-4 py-2">前缀</th><th class="text-left px-4 py-2">用户ID</th>
+              <th class="text-left px-4 py-2">状态</th><th class="text-left px-4 py-2">RPM</th>
+              <th class="text-left px-4 py-2">最后使用</th><th class="text-left px-4 py-2">操作</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="k in apikeys" :key="k.id">
+                <tr class="border-t">
+                  <td class="px-4 py-2" x-text="k.id"></td>
+                  <td class="px-4 py-2" x-text="k.name"></td>
+                  <td class="px-4 py-2 font-mono text-xs" x-text="k.key_prefix"></td>
+                  <td class="px-4 py-2" x-text="k.user_id"></td>
+                  <td class="px-4 py-2"><span :class="k.status === 'active' ? 'text-green-600' : 'text-red-600'" x-text="k.status"></span></td>
+                  <td class="px-4 py-2" x-text="k.rate_limit_rpm"></td>
+                  <td class="px-4 py-2 text-xs" x-text="k.last_used_at || '-'"></td>
+                  <td class="px-4 py-2">
+                    <button @click="deleteKey(k.id)" class="text-red-500 text-xs">删除</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Providers -->
+      <div x-show="page === 'providers'">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-2xl font-bold">Provider 管理</h2>
+          <button @click="showForm = 'provider'" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">+ 新建 Provider</button>
+        </div>
+        <div x-show="showForm === 'provider'" class="bg-white rounded-lg p-4 mb-4 shadow">
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <input x-model="forms.provider.name" placeholder="名称 (如 openai_primary)" class="border rounded px-3 py-2">
+            <input x-model="forms.provider.base_url" placeholder="Base URL (如 https://api.openai.com/v1)" class="border rounded px-3 py-2">
+            <input x-model="forms.provider.api_key" placeholder="上游 API Key" class="border rounded px-3 py-2">
+            <input x-model="forms.provider.priority" placeholder="优先级 (数字越大越优先)" class="border rounded px-3 py-2">
+          </div>
+          <div class="mt-3">
+            <button @click="createProvider()" class="bg-green-600 text-white px-4 py-2 rounded text-sm mr-2">创建</button>
+            <button @click="showForm = null" class="text-gray-500 text-sm">取消</button>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50"><tr>
+              <th class="text-left px-4 py-2">ID</th><th class="text-left px-4 py-2">名称</th>
+              <th class="text-left px-4 py-2">Base URL</th><th class="text-left px-4 py-2">状态</th>
+              <th class="text-left px-4 py-2">优先级</th><th class="text-left px-4 py-2">权重</th>
+              <th class="text-left px-4 py-2">操作</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="p in providers" :key="p.id">
+                <tr class="border-t">
+                  <td class="px-4 py-2" x-text="p.id"></td>
+                  <td class="px-4 py-2" x-text="p.name"></td>
+                  <td class="px-4 py-2 text-xs font-mono" x-text="p.base_url"></td>
+                  <td class="px-4 py-2"><span :class="p.status === 'active' ? 'text-green-600' : 'text-red-600'" x-text="p.status"></span></td>
+                  <td class="px-4 py-2" x-text="p.priority"></td>
+                  <td class="px-4 py-2" x-text="p.weight"></td>
+                  <td class="px-4 py-2">
+                    <button @click="testProvider(p.id)" class="text-blue-500 text-xs mr-2">测试</button>
+                    <button @click="deleteProvider(p.id)" class="text-red-500 text-xs">删除</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Routes -->
+      <div x-show="page === 'routes'">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-2xl font-bold">模型路由管理</h2>
+          <button @click="showForm = 'route'" class="bg-blue-600 text-white px-4 py-2 rounded text-sm">+ 新建路由</button>
+        </div>
+        <div x-show="showForm === 'route'" class="bg-white rounded-lg p-4 mb-4 shadow">
+          <div class="grid grid-cols-3 gap-3">
+            <input x-model="forms.route.public_model" placeholder="公开模型名 (如 gpt-5.4-codex)" class="border rounded px-3 py-2">
+            <input x-model="forms.route.provider_id" placeholder="Provider ID" class="border rounded px-3 py-2">
+            <input x-model="forms.route.upstream_model" placeholder="上游模型名 (空则透传)" class="border rounded px-3 py-2">
+          </div>
+          <div class="mt-3">
+            <button @click="createRoute()" class="bg-green-600 text-white px-4 py-2 rounded text-sm mr-2">创建</button>
+            <button @click="showForm = null" class="text-gray-500 text-sm">取消</button>
+          </div>
+        </div>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50"><tr>
+              <th class="text-left px-4 py-2">ID</th><th class="text-left px-4 py-2">公开模型</th>
+              <th class="text-left px-4 py-2">Provider ID</th><th class="text-left px-4 py-2">上游模型</th>
+              <th class="text-left px-4 py-2">用户组</th><th class="text-left px-4 py-2">启用</th>
+              <th class="text-left px-4 py-2">优先级</th><th class="text-left px-4 py-2">操作</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="r in routes" :key="r.id">
+                <tr class="border-t">
+                  <td class="px-4 py-2" x-text="r.id"></td>
+                  <td class="px-4 py-2 font-mono" x-text="r.public_model"></td>
+                  <td class="px-4 py-2" x-text="r.provider_id"></td>
+                  <td class="px-4 py-2 font-mono" x-text="r.upstream_model || '-'"></td>
+                  <td class="px-4 py-2" x-text="r.user_group"></td>
+                  <td class="px-4 py-2"><span :class="r.enabled ? 'text-green-600' : 'text-red-600'" x-text="r.enabled ? '是' : '否'"></span></td>
+                  <td class="px-4 py-2" x-text="r.priority"></td>
+                  <td class="px-4 py-2">
+                    <button @click="deleteRoute(r.id)" class="text-red-500 text-xs">删除</button>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Usage -->
+      <div x-show="page === 'usage'">
+        <h2 class="text-2xl font-bold mb-4">用量查询</h2>
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50"><tr>
+              <th class="text-left px-4 py-2">ID</th><th class="text-left px-4 py-2">用户</th>
+              <th class="text-left px-4 py-2">模型</th><th class="text-left px-4 py-2">输入</th>
+              <th class="text-left px-4 py-2">输出</th><th class="text-left px-4 py-2">耗时</th>
+              <th class="text-left px-4 py-2">状态</th><th class="text-left px-4 py-2">时间</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="u in usage" :key="u.id">
+                <tr class="border-t">
+                  <td class="px-4 py-2" x-text="u.id"></td>
+                  <td class="px-4 py-2" x-text="u.user_id"></td>
+                  <td class="px-4 py-2 font-mono text-xs" x-text="u.model"></td>
+                  <td class="px-4 py-2" x-text="u.input_tokens"></td>
+                  <td class="px-4 py-2" x-text="u.output_tokens"></td>
+                  <td class="px-4 py-2" x-text="u.latency_ms + 'ms'"></td>
+                  <td class="px-4 py-2"><span :class="u.status === 'success' ? 'text-green-600' : 'text-red-600'" x-text="u.status"></span></td>
+                  <td class="px-4 py-2 text-xs" x-text="u.created_at"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    function app() {
+      return {
+        adminKey: localStorage.getItem('admin_key') || '',
+        loginKey: '',
+        loginError: '',
+        page: 'dashboard',
+        showForm: null,
+        createdKey: '',
+        dashboard: {},
+        users: [],
+        apikeys: [],
+        providers: [],
+        routes: [],
+        usage: [],
+        forms: {
+          user: { email: '', password: '', role: 'user' },
+          apikey: { user_id: '1', name: '', rpm: '60' },
+          provider: { name: '', base_url: '', api_key: '', priority: '0' },
+          route: { public_model: '', provider_id: '', upstream_model: '' },
+        },
+        navItems: [
+          { id: 'dashboard', label: '仪表盘' },
+          { id: 'users', label: '用户管理' },
+          { id: 'apikeys', label: 'API Key' },
+          { id: 'providers', label: 'Provider' },
+          { id: 'routes', label: '模型路由' },
+          { id: 'usage', label: '用量查询' },
+        ],
+        init() {
+          if (this.adminKey) this.loadPage();
+        },
+        doLogin() {
+          this.adminKey = this.loginKey;
+          localStorage.setItem('admin_key', this.loginKey);
+          this.loginError = '';
+          this.loadPage();
+        },
+        headers() {
+          return { 'Authorization': 'Bearer ' + this.adminKey, 'Content-Type': 'application/json' };
+        },
+        async api(method, path, body) {
+          const opts = { method, headers: this.headers() };
+          if (body) opts.body = JSON.stringify(body);
+          const res = await fetch(path, opts);
+          if (res.status === 401 || res.status === 403) {
+            this.adminKey = '';
+            localStorage.removeItem('admin_key');
+            this.loginError = '认证失败，请重新登录';
+            return null;
+          }
+          return await res.json();
+        },
+        async loadPage() {
+          if (!this.adminKey) return;
+          if (this.page === 'dashboard') {
+            this.dashboard = await this.api('GET', '/admin/dashboard') || {};
+          } else if (this.page === 'users') {
+            const r = await this.api('GET', '/admin/users');
+            this.users = r ? r.data : [];
+          } else if (this.page === 'apikeys') {
+            const r = await this.api('GET', '/admin/apikeys');
+            this.apikeys = r ? r.data : [];
+          } else if (this.page === 'providers') {
+            const r = await this.api('GET', '/admin/providers');
+            this.providers = r ? r.data : [];
+          } else if (this.page === 'routes') {
+            const r = await this.api('GET', '/admin/routes');
+            this.routes = r ? r.data : [];
+          } else if (this.page === 'usage') {
+            const r = await this.api('GET', '/admin/usage');
+            this.usage = r ? r.data : [];
+          }
+          this.showForm = null;
+          this.createdKey = '';
+        },
+        async createUser() {
+          await this.api('POST', '/admin/users', this.forms.user);
+          this.forms.user = { email: '', password: '', role: 'user' };
+          this.loadPage();
+        },
+        async deleteUser(id) {
+          if (confirm('确定删除用户 #' + id + '?')) {
+            await this.api('DELETE', '/admin/users/' + id);
+            this.loadPage();
+          }
+        },
+        async createKey() {
+          const r = await this.api('POST', '/admin/apikeys', {
+            user_id: parseInt(this.forms.apikey.user_id),
+            name: this.forms.apikey.name,
+            rate_limit_rpm: parseInt(this.forms.apikey.rpm) || 60,
+          });
+          if (r && r.key) this.createdKey = r.key;
+          this.forms.apikey = { user_id: '1', name: '', rpm: '60' };
+          const rr = await this.api('GET', '/admin/apikeys');
+          this.apikeys = rr ? rr.data : [];
+        },
+        async deleteKey(id) {
+          if (confirm('确定删除 Key #' + id + '?')) {
+            await this.api('DELETE', '/admin/apikeys/' + id);
+            this.loadPage();
+          }
+        },
+        async createProvider() {
+          await this.api('POST', '/admin/providers', {
+            name: this.forms.provider.name,
+            base_url: this.forms.provider.base_url,
+            api_key: this.forms.provider.api_key,
+            priority: parseInt(this.forms.provider.priority) || 0,
+          });
+          this.forms.provider = { name: '', base_url: '', api_key: '', priority: '0' };
+          this.loadPage();
+        },
+        async deleteProvider(id) {
+          if (confirm('确定删除 Provider #' + id + '?')) {
+            await this.api('DELETE', '/admin/providers/' + id);
+            this.loadPage();
+          }
+        },
+        async testProvider(id) {
+          const r = await this.api('POST', '/admin/providers/' + id + '/test');
+          alert(r ? JSON.stringify(r) : '测试失败');
+        },
+        async createRoute() {
+          await this.api('POST', '/admin/routes', {
+            public_model: this.forms.route.public_model,
+            provider_id: parseInt(this.forms.route.provider_id),
+            upstream_model: this.forms.route.upstream_model,
+          });
+          this.forms.route = { public_model: '', provider_id: '', upstream_model: '' };
+          this.loadPage();
+        },
+        async deleteRoute(id) {
+          if (confirm('确定删除路由 #' + id + '?')) {
+            await this.api('DELETE', '/admin/routes/' + id);
+            this.loadPage();
+          }
+        },
+      };
+    }
+  </script>
+</body>
+</html>
