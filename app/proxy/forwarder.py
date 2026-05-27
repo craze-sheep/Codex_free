@@ -189,8 +189,8 @@ async def _forward_stream(
                     async for chunk in resp.aiter_bytes():
                         error_body += chunk
                     circuit_breaker.record_failure(provider_id)
-                    # Forward upstream error as SSE event
-                    yield f"data: {json.dumps({'error': 'Upstream error: ' + error_body.decode(errors='replace')})}\n\n"
+                    logger.error("Upstream returned %d during stream", resp.status_code)
+                    yield f'data: {{"error": {{"message": "Upstream error", "type": "server_error"}}}}\n\n'
                     return
 
                 circuit_breaker.record_success(provider_id)

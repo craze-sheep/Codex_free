@@ -39,9 +39,16 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_BODY_SIZE:
-            return JSONResponse(
-                status_code=413,
-                content={"error": {"message": "Request body too large", "type": "invalid_request_error"}},
-            )
+        if content_length:
+            try:
+                if int(content_length) > MAX_BODY_SIZE:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"error": {"message": "Request body too large", "type": "invalid_request_error"}},
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": {"message": "Invalid Content-Length header", "type": "invalid_request_error"}},
+                )
         return await call_next(request)
