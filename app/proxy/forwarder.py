@@ -1,4 +1,9 @@
-"""Request forwarder — proxies /v1/responses to upstream providers."""
+"""Request forwarder — proxies /v1/responses to upstream providers.
+
+Uses singleton httpx client for connection pooling.
+Handles both streaming (SSE) and non-streaming responses.
+Properly forwards all Responses API event types.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
+from app.http_client import get_http_client
 from app.middleware.rate_limit import rate_limiter
 from app.proxy.circuit_breaker import circuit_breaker
 from app.proxy.router import select_provider
@@ -36,7 +42,10 @@ async def forward_request(
     try:
         req_data = json.loads(body)
     except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        return JSONResponse(
+            {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}},
+            status_code=400,
+        )
 
     public_model = req_data.get("model", "")
     is_stream = req_data.get("stream", False)
@@ -82,22 +91,32 @@ async def forward_request(
         "Authorization": f"Bearer {upstream_key}",
     }
 
-    # Add proxy config
-    proxy_url = settings.proxy_url
+    # Forward X-Request-ID for tracing
+    request_id = request.headers.get("X-Request-ID")
+    if request_id:
+        headers["X-Request-ID"] = request_id
 
+    client = get_http_client()
     start_time = time.perf_counter()
 
     try:
         if is_stream:
-            return await _forward_stream(upstream_url, headers, req_data, proxy_url, provider_id, user_id, key_id, public_model, start_time)
+            return await _forward_stream(client, upstream_url, headers, req_data, provider_id, user_id, key_id, public_model, start_time)
         else:
-            return await _forward_sync(upstream_url, headers, req_data, proxy_url, provider_id, user_id, key_id, public_model, start_time)
+            return await _forward_sync(client, upstream_url, headers, req_data, provider_id, user_id, key_id, public_model, start_time)
     except httpx.ConnectError as e:
         circuit_breaker.record_failure(provider_id)
         logger.error("Upstream connect error: %s", e)
         return JSONResponse(
             {"error": {"message": "Failed to connect to upstream provider", "type": "server_error"}},
             status_code=502,
+        )
+    except httpx.ReadTimeout:
+        circuit_breaker.record_failure(provider_id)
+        logger.error("Upstream read timeout")
+        return JSONResponse(
+            {"error": {"message": "Upstream request timed out", "type": "server_error"}},
+            status_code=504,
         )
     except Exception as e:
         circuit_breaker.record_failure(provider_id)
@@ -109,10 +128,10 @@ async def forward_request(
 
 
 async def _forward_sync(
+    client: httpx.AsyncClient,
     url: str,
     headers: dict,
     body: dict,
-    proxy: Optional[str],
     provider_id: int,
     user_id: int,
     key_id: int,
@@ -120,17 +139,19 @@ async def _forward_sync(
     start_time: float,
 ) -> JSONResponse:
     """Non-streaming forward."""
-    async with httpx.AsyncClient(proxy=proxy, timeout=120.0) as client:
-        resp = await client.post(url, headers=headers, json=body)
-
+    resp = await client.post(url, headers=headers, json=body)
     elapsed_ms = int((time.perf_counter() - start_time) * 1000)
 
     if resp.status_code != 200:
         circuit_breaker.record_failure(provider_id)
-        return JSONResponse(resp.json(), status_code=resp.status_code)
+        # Try to return upstream error format as-is
+        try:
+            error_data = resp.json()
+        except Exception:
+            error_data = {"error": {"message": resp.text, "type": "server_error"}}
+        return JSONResponse(error_data, status_code=resp.status_code)
 
     circuit_breaker.record_success(provider_id)
-
     resp_data = resp.json()
 
     # Async usage logging
@@ -140,53 +161,84 @@ async def _forward_sync(
 
 
 async def _forward_stream(
+    client: httpx.AsyncClient,
     url: str,
     headers: dict,
     body: dict,
-    proxy: Optional[str],
     provider_id: int,
     user_id: int,
     key_id: int,
     model: str,
     start_time: float,
 ) -> StreamingResponse:
-    """SSE streaming forward."""
+    """SSE streaming forward.
+
+    Responses API uses different event format than chat completions:
+    - No [DONE] marker — ends with response.completed event
+    - Events have 'type' field, not just 'data'
+    - Multiple event types: response.output_text.delta, response.function_call_arguments.delta, etc.
+    """
 
     async def event_generator():
         total_input = 0
         total_output = 0
         try:
-            async with httpx.AsyncClient(proxy=proxy, timeout=300.0) as client:
-                async with client.stream("POST", url, headers=headers, json=body) as resp:
-                    if resp.status_code != 200:
-                        error_body = b""
-                        async for chunk in resp.aiter_bytes():
-                            error_body += chunk
-                        circuit_breaker.record_failure(provider_id)
-                        yield f"data: {json.dumps({'error': 'Upstream error'})}\n\n"
-                        return
+            async with client.stream("POST", url, headers=headers, json=body) as resp:
+                if resp.status_code != 200:
+                    error_body = b""
+                    async for chunk in resp.aiter_bytes():
+                        error_body += chunk
+                    circuit_breaker.record_failure(provider_id)
+                    # Forward upstream error as SSE event
+                    yield f"data: {json.dumps({'error': 'Upstream error: ' + error_body.decode(errors='replace')})}\n\n"
+                    return
 
-                    circuit_breaker.record_success(provider_id)
+                circuit_breaker.record_success(provider_id)
 
-                    async for line in resp.aiter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str.strip() == "[DONE]":
-                                yield "data: [DONE]\n\n"
-                                break
-                            try:
-                                event = json.loads(data_str)
-                                # Extract usage if present
-                                if "usage" in event:
-                                    total_input = event["usage"].get("input_tokens", total_input)
-                                    total_output = event["usage"].get("output_tokens", total_output)
-                            except json.JSONDecodeError:
-                                pass
-                            yield f"{line}\n\n"
-                        elif line.strip() == "":
-                            continue
-                        else:
-                            yield f"{line}\n\n"
+                # Forward SSE events line by line
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        # Empty line = end of SSE event block
+                        yield "\n"
+                        continue
+
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+
+                        # Responses API: no [DONE] marker, but handle it just in case
+                        if data_str.strip() == "[DONE]":
+                            yield "data: [DONE]\n\n"
+                            break
+
+                        # Try to parse for usage extraction
+                        try:
+                            event = json.loads(data_str)
+                            event_type = event.get("type", "")
+
+                            # Extract usage from response.completed event
+                            if event_type == "response.completed" and "response" in event:
+                                usage = event["response"].get("usage", {})
+                                total_input = usage.get("input_tokens", total_input)
+                                total_output = usage.get("output_tokens", total_output)
+
+                            # Also handle chat completions format (fallback)
+                            if "usage" in event and event_type == "":
+                                total_input = event["usage"].get("input_tokens", total_input)
+                                total_output = event["usage"].get("output_tokens", total_output)
+                        except json.JSONDecodeError:
+                            pass
+
+                        # Forward the event as-is
+                        yield f"data: {data_str}\n\n"
+                    elif line.startswith("event: "):
+                        # Forward event type line
+                        yield f"{line}\n"
+                    elif line.startswith(":"):
+                        # SSE comment (keep-alive), skip
+                        continue
+                    else:
+                        # Forward any other SSE fields
+                        yield f"{line}\n"
 
         except Exception as e:
             logger.error("Stream error: %s", e)
