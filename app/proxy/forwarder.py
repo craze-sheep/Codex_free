@@ -13,6 +13,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
+from app.middleware.rate_limit import rate_limiter
 from app.proxy.circuit_breaker import circuit_breaker
 from app.proxy.router import select_provider
 from app.store.provider import decrypt_api_key
@@ -25,6 +26,8 @@ async def forward_request(
     request: Request,
     user_id: int,
     key_id: int,
+    rate_limit_rpm: int = 60,
+    rate_limit_tpm: int = 100000,
 ) -> JSONResponse | StreamingResponse:
     """Forward a /v1/responses request to the best upstream provider."""
 
@@ -37,6 +40,9 @@ async def forward_request(
 
     public_model = req_data.get("model", "")
     is_stream = req_data.get("stream", False)
+
+    # Rate limit check (RPM)
+    rate_limiter.check_rpm(key_id, rate_limit_rpm)
 
     # Route to provider
     route = await select_provider(public_model)

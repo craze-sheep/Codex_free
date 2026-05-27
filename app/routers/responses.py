@@ -20,4 +20,6 @@ async def handle_responses(
         request=request,
         user_id=auth["user_id"],
         key_id=auth["key_id"],
+        rate_limit_rpm=auth["rate_limit_rpm"],
+        rate_limit_tpm=auth["rate_limit_tpm"],
     )
